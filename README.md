@@ -1,5 +1,11 @@
-﻿# dsh-freelance-radar
+# dsh-freelance-radar
 
+
+<p align="center">
+  <a href="https://github.com/jonah791/dsh-freelance-radar"><img src="https://img.shields.io/badge/version-0.1.0-blue" alt="version"></a>
+  <img src="https://img.shields.io/badge/License-MIT-green" alt="license">
+  <img src="https://img.shields.io/badge/TypeScript-3178C6" alt="TypeScript">
+</p>
 自由职业任务雷达——支撑主人的自由人/数字游民路线（2026-09-03 主人指示开发）。
 
 聚合公开远程任务源（v1 = 电鸭社区 API）→ 按主人能力画像（AI Agent / LLM 定制 + 排除词）打分筛选 → 工具面呈现 + 每日摘要。只读采集、主人决策闭环，**不自动投标**（合规红线）。
