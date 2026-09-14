@@ -26,12 +26,16 @@ import type { RadarStats } from './trace.ts'
  * 安全 ISO 归一（2026-09-14 修复）：非法日期原实现走 `new Date(v).toISOString()`
  * → 抛 `RangeError: Invalid time value`。在 fetchRemoteOK/fetchRemotive/fetchWeWorkRemotely
  * 里这会被 Promise.allSettled 记为 rejected → **一条脏日期条目拖垮整个源**（静默丢数据）。
- * 现语义与「日期缺失」一致：回落到当前时间（daysSince 判为最新，不抛错）。
+ * 现语义与「日期缺失」一致：回落到**注入的 now**（daysSince 判为最新，不抛错）。
+ *
+ * `now` 可注入（2026-09-14 二次修正）：此前兜底直接读 `Date.now()` ⇒ 纯函数不纯，
+ * 单测里「同一输入调两次」会因毫秒差产生不同结果（实测 `…53.431Z` vs `…53.430Z` 假红）。
+ * 默认值保持 `Date.now()` ⇒ 生产行为逐字不变。
  */
-function toIso(v: string | undefined): string {
-  if (typeof v !== 'string' || v.length === 0) return new Date().toISOString()
+export function toIso(v: string | undefined, now: number = Date.now()): string {
+  if (typeof v !== 'string' || v.length === 0) return new Date(now).toISOString()
   const t = new Date(v)
-  return Number.isNaN(t.getTime()) ? new Date().toISOString() : t.toISOString()
+  return Number.isNaN(t.getTime()) ? new Date(now).toISOString() : t.toISOString()
 }
 
 /** HTML 摘要 → 纯文本（粗略去标签） */

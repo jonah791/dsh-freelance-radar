@@ -35,6 +35,7 @@ import {
   parseRemoteOk, parseRemoteOkDetailed,
   parseRemotive, parseRemotiveDetailed,
   parseWwrRss, parseWwrRssDetailed,
+  toIso,
 } from '../lib/sources.js'
 import { apply } from '../lib/index.js'
 
@@ -207,7 +208,11 @@ test('parseEleduckPostsDetailed：bad-entry / duplicate 分开计数；薄委托
   assert.equal(stats.kept, 2)
   assert.equal(stats.dropped, 3)
   assert.deepEqual(stats.reasons, { duplicate: 1, 'bad-entry': 2 })
-  assert.deepEqual(parseEleduckPosts(posts), jobs)
+  // 薄委托：只比结构（同 id 序列、同条数），不比 publishedAt——本 fixture 的条目无 date
+  // ⇒ toIso 兜底取「当前时间」，两次调用天然差毫秒（同形状抖动共 4 处，本日已全部改为结构比对）。
+  const ePlain = parseEleduckPosts(posts)
+  assert.deepEqual(ePlain.map((j) => j.id), jobs.map((j) => j.id))
+  assert.equal(ePlain.length, jobs.length)
 })
 
 test('parseRemoteOkDetailed：metadata / non-tech / bad-entry / duplicate 四类依据', () => {
@@ -224,8 +229,24 @@ test('parseRemoteOkDetailed：metadata / non-tech / bad-entry / duplicate 四类
   assert.equal(stats.kept, 1)
   assert.equal(stats.dropped, 4)
   assert.deepEqual(stats.reasons, { metadata: 1, 'non-tech': 1, 'bad-entry': 1, duplicate: 1 })
-  assert.deepEqual(parseRemoteOk(data), jobs)
+  // 薄委托断言：只比**结构**（同 id、同条数）——不比 publishedAt。
+  // 该 fixture 的保留条目没有 date ⇒ toIso 兜底取「当前时间」，两次调用天然差毫秒
+  // （实测 `…53.431Z` vs `…53.430Z` 假红）。兜底语义由下面带注入时钟的用例单测定死。
+  const plain = parseRemoteOk(data)
+  assert.deepEqual(plain.map((j) => j.id), jobs.map((j) => j.id))
+  assert.equal(plain.length, jobs.length)
   assert.deepEqual(parseRemoteOkDetailed([]).stats, { raw: 0, kept: 0, dropped: 0 })   // 空数组：不误记 metadata
+})
+
+test('toIso：时钟可注入 ⇒ 兜底语义确定可测（缺日期/非法日期都回落到注入的 now）', () => {
+  const NOW = 1789355521631
+  assert.equal(toIso(undefined, NOW), new Date(NOW).toISOString())
+  assert.equal(toIso('', NOW), new Date(NOW).toISOString())
+  assert.equal(toIso('not-a-date', NOW), new Date(NOW).toISOString())
+  // 合法日期不受 now 影响（注入时钟不得篡改真值）
+  assert.equal(toIso('2026-01-02T03:04:05.000Z', NOW), '2026-01-02T03:04:05.000Z')
+  // 同一输入 + 同一注入时钟 ⇒ 纯函数逐字可复现（这正是上面那条假红的根因）
+  assert.equal(toIso(undefined, NOW), toIso(undefined, NOW))
 })
 
 test('parseRemoteOk 的技术岗过滤是**子串**判定（真语义，非缺陷但会误收）', () => {
@@ -249,7 +270,10 @@ test('parseRemotiveDetailed / parseWwrRssDetailed：坏条目与去重都留依�
   const r = parseRemotiveDetailed(remotive)
   assert.equal(r.jobs.length, 1)
   assert.deepEqual(r.stats.reasons, { duplicate: 1, 'bad-entry': 1 })
-  assert.deepEqual(parseRemotive(remotive), r.jobs)
+  // 薄委托：比结构不比 publishedAt（fixture 无日期 ⇒ toIso 兜底取当前时间，两次调用差毫秒）
+  const rPlain = parseRemotive(remotive)
+  assert.deepEqual(rPlain.map((j) => j.id), r.jobs.map((j) => j.id))
+  assert.equal(rPlain.length, r.jobs.length)
 
   const xml = [
     '<rss>',
@@ -264,7 +288,10 @@ test('parseRemotiveDetailed / parseWwrRssDetailed：坏条目与去重都留依�
   assert.equal(w.stats.raw, 4)
   assert.equal(w.stats.kept, 1)
   assert.deepEqual(w.stats.reasons, { duplicate: 1, 'bad-item': 1, empty: 1 })
-  assert.deepEqual(parseWwrRss(xml), w.jobs)
+  // 同上：薄委托只比结构（url 集合），不比 publishedAt（fixture 无 pubDate ⇒ 兜底取当前时间）
+  const wPlain = parseWwrRss(xml)
+  assert.deepEqual(wPlain.map((j) => j.url), w.jobs.map((j) => j.url))
+  assert.equal(wPlain.length, w.jobs.length)
 })
 
 // ---------- 接线测试：真 apply + 假 ctx + fetch 桩 ----------
