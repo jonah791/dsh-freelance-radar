@@ -10,6 +10,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   addReason,
   buildStamp,
@@ -68,7 +69,7 @@ test('selfBuild：<version>@<mtime ms> 形态且 mtime 来自产物；缓存稳�
   const build = selfBuild()
   assert.match(build, /^[^@]+@\d+$/)
   const [version, mtime] = build.split('@')
-  const libTrace = new URL('../lib/trace.js', import.meta.url).pathname.replace(/^\//, '')
+  const libTrace = fileURLToPath(new URL('../lib/trace.js', import.meta.url))
   assert.equal(version, readPackageVersion(libTrace))
   assert.ok(Number(mtime) > 0)
   assert.equal(selfBuild(), build)
