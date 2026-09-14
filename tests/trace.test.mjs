@@ -7,7 +7,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, utimesSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -480,6 +480,7 @@ test('接线：radar_digest 主动说出「距上次扫描 N 天」——手动�
   const fresh = await digest.execute({})
   assert.equal(fresh.staleDays, -1)
   assert.equal(fresh.lastScanAt, '')
+  assert.equal(fresh.stateStaleDays, -1, '状态文件不存在 → 旁证也是 -1')
   assert.match(digest.output.render({}, fresh)[0].text, /无记录/)
 
   // ② 补一行 9 天前的 scan/end → staleDays=9 且 render 响亮告警（阈值 7 天）
@@ -489,6 +490,26 @@ test('接线：radar_digest 主动说出「距上次扫描 N 天」——手动�
   assert.equal(stale.staleDays, 9)
   assert.match(stale.summary, /距上次扫描 9 天/)
   assert.match(digest.output.render({}, stale)[0].text, /⚠ 距上次扫描 9 天/)
+
+  // ③ 轨迹无 scan 行（= 轨迹层上线前的历史）但状态文件 9 天前写过 → **降级旁证必须出现**：
+  //    主判据为 null 时止步于「无记录」，等于把「9 天没动过」这条本来就有的信息丢掉。
+  const home2 = join(tmp, 'digest-fallback')
+  const dir2 = join(home2, 'freelance-radar')
+  mkdirSync(dir2, { recursive: true })
+  const stateFile = join(dir2, 'jobs.json')
+  writeFileSync(stateFile, JSON.stringify({ jobs: [] }), 'utf8')
+  const old = new Date(nineDaysAgo)
+  utimesSync(stateFile, old, old)
+  process.env['DSH_HOME'] = home2
+  const { ctx: ctx2, registered: reg2 } = makeCtx()
+  apply(ctx2, { enabled: true, dataDir: dir2 })
+  const digest2 = reg2.find((t) => t.name === 'radar_digest')
+  const fallback = await digest2.execute({})
+  assert.equal(fallback.staleDays, -1, '无 scan 行 ⇒ 主判据仍为 null（不拿 mtime 冒充扫描）')
+  assert.equal(fallback.stateStaleDays, 9)
+  assert.match(digest2.output.render({}, fallback)[0].text, /状态文件最后写入 9 天前/)
+  assert.match(fallback.summary, /状态文件 9 天未更新/)
+  process.env['DSH_HOME'] = join(tmp, 'home')
 })
 
 test('cleanup', () => {

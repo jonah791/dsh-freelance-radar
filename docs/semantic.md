@@ -104,6 +104,7 @@
 | `radar_mark` 成功 | 改 `status`/`updatedAt`，可选写 `note`，落盘 | 主人决策留痕 |
 | `radar_digest` 高分新任务 | `status==='new'` **且** `firstSeenAt` 的日期 == 今天（UTC）**且** 实时分 ≥ minScore → 取前 5 | 摘要口径 |
 | `radar_digest` 待跟进 | `status==='considered'` 且 `updatedAt` 距今 `≥3` 整天 → 取前 5 | 跟进提醒 |
+| `radar_digest` **扫描新鲜度**（2026-09-14 新增） | 主判据 `lastScanAt`/`staleDays` = 自证轨迹 `scan/*` 相位最大 `atMs`；**主判据为 `null` 时**降级输出 `stateWrittenAt`/`stateStaleDays`（`jobs.json` mtime），并在文案里**显式标注它可能是 `radar_mark` 而非扫描** | 停摆可见——手动模式下唯一会说话的地方 |
 | 两者皆空 | 正文输出「雷达平静」+ summary 仍带「雷达正常巡检」 | 不静默 |
 
 ### 4.4 调用点清单 `[MUST]`
@@ -215,7 +216,7 @@
 | A19 | 脏数据丢弃数与依据可读 | `source/end` 行 `raw/hits/dropped/reasons`（如 `{raw:3,hits:1,dropped:2,reasons:{'bad-entry':2}}`）；四个 `parse*Detailed` 的 `reasons` 键枚举见 §4.5 | ✅ 2026-09-14 |
 | A20 | **观测不反噬**（含接线级尸体测试） | `DSH_HOME` 父路径是普通文件 → `radarTrace` 返回 `false` 且不抛；`radar_scan` 照常 `ok:true` 且 `added` 不变 | ✅ 2026-09-14 |
 | A21 | 入库闭环可解释（`scan/end`） | 首轮 `fetched=added=5, dups=0`；第二轮同数据 `added=0, dups=5, sourcesFailed=0` | ✅ 2026-09-14 |
-| A22 | **停摆可见**（2026-09-14 第 1 组漂移修复新增） | 轨迹里补一行 9 天前的 `scan/end` → `radar_digest.staleDays=9`、`summary` 含「距上次扫描 9 天」、render 出 `⚠`；轨迹**只有 `boot` 行**（`apply` 启动即写）→ `staleDays=-1`、render 出「无记录」 | ✅ 2026-09-14（接线用例「radar_digest 主动说出『距上次扫描 N 天』」） |
+| A22 | **停摆可见**（2026-09-14 第 1 组漂移修复新增） | 轨迹里补一行 9 天前的 `scan/end` → `radar_digest.staleDays=9`、`summary` 含「距上次扫描 9 天」、render 出 `⚠`；轨迹**只有 `boot` 行**（`apply` 启动即写）→ `staleDays=-1`、render 出「无记录」；**轨迹无 scan 行但状态文件 9 天前写过** → `staleDays=-1` **且** `stateStaleDays=9`、render 出「状态文件最后写入 9 天前（可能是 radar_mark，不等于扫描）」 | ✅ 2026-09-14（接线用例「radar_digest 主动说出『距上次扫描 N 天』」三段） |
 | A22 | **搬家零漂移（机械核对）** | HEAD 版 `sources.ts`（node 类型剥离直跑）与 `lib/sources.js` 在 **17 组输入**（含 `null` 元素、脏日期、重复 id、空 XML）上结果（含抛错类型）逐字相同 → `对比次数=17 不等价=0` | ✅ 2026-09-14 |
 
 ## 8 · 与实现的关系
@@ -242,6 +243,8 @@
   - ① **`radar_find` 幻影工具**：`radar_mark.jobId` 描述改指 `radar_list` 的 `id` 字段，并**同时**让 `radar_list` 把 `id` 输进工具面（原 render 只有 title/url/分数——只改描述会让「用 id 标记」无从下手）。
   - ② **未消费的 `push` 参数**：**删除**（不补实现）。本工具按设计不发送任何消息，推送归爱丽丝 `telegram_send`；留一个永不生效的参数只是谎。
   - ③ **「雷达 9 天未扫」定性纠正 + 停摆可见化**：实测 `src` 无定时器、计划任务无 radar、`life-core` 不引用它，且**设计文档 §5 明写「不内建定时器（自主性铁律）——感知圈/主人手动触发」** ⇒ 这**不是**「机制静默停摆」，而是**手动触发模式的必然结果**；**真缺口是「停摆不可见」**（没有任何面会说「N 天没扫了」）。修法：`radar_digest` 新增 `lastScanAt` / `staleDays`，判据源 = **自证轨迹的 `scan/*` 相位最大 `atMs`**（不是 `jobs.json` mtime——那次写入也可能来自 `radar_mark`），`≥7` 天在 render + summary 里响亮告警，无记录 → `-1` 且明说「无记录」。
+    - **同日二次修订（部署后线上验收当场发现）**：轨迹层**2026-09-14 才上线** ⇒ 上线前的扫描根本没有 `scan/*` 行，主判据为 `null`，工具只报「无记录」——**「状态文件 9 天没动过」这条已经存在的信息仍被丢掉**，等于只关了一半。补**降级旁证** `stateWrittenAt`/`stateStaleDays`（`jobs.json` mtime），文案显式标注「可能是 `radar_mark`，不等于扫描」。**主判据不换**（C2 单一真源：mtime 混淆「扫过」与「标过」），旁证只回答「至少多久没动过」。
+    - 教训：**「机制修好」≠「症状消失」**——线上跑一次才发现主判据在**历史数据上恒为空**；修观测类缺陷必须用「拿真实现状跑一遍」验收，而不是只看单测绿。
   - ④ **设计文档路径**：`docs/freelance-radar-design.md` 实际在**工作区** `E:\alice\docs\`（不在插件仓内），两处源码头部已改指真实路径；并勘误 §8 的「README 也引用」半句（README 未引用）。
   - 测试 **61 → 65**（`lastScanAtMs` 纯函数 2 例 + digest 接线 1 例，含「只有 `boot` 行 ≠ 扫过」判据）。
   - 教训：**先复现再改，连「任务描述」一起复现**——本条任务描述里的两点（雷达停摆＝机制故障、设计文档不存在）都被现场证据推翻，照抄描述会写出错误的修复方向。

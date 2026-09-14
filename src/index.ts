@@ -38,7 +38,7 @@ import type { EleduckRawPost, RemoteOKJob, RemotiveJob } from './sources.ts'
 import {
   addReason, classifyFailure, clip, emptyStats, finalizeStats, mergeStats,
   radarTrace, radarTraceBoot, traceEnabled, traceSourceReport,
-  lastScanAt, radarTracePath, resolveHome,
+  lastScanAt, radarTracePath, resolveHome, mtimeOf,
 } from './trace.ts'
 import type { RadarStats, SourceReport } from './trace.ts'
 
@@ -515,6 +515,8 @@ export function apply(ctx: Context, config: Config): void {
           summary: { type: 'string' },
           lastScanAt: { type: 'string' },
           staleDays: { type: 'number' },
+          stateWrittenAt: { type: 'string' },
+          stateStaleDays: { type: 'number' },
         },
       },
       render: (_a: unknown, v: any) => {
@@ -532,11 +534,14 @@ export function apply(ctx: Context, config: Config): void {
         }
         if (lines.length === 0) lines.push('今日无高分新任务、无待跟进——雷达平静。')
         const stale = typeof v.staleDays === 'number' ? v.staleDays : -1
-        const scanLine = stale < 0
-          ? '距上次扫描：无记录（轨迹为空或不可读）'
-          : stale >= 7
+        const stateStale = typeof v.stateStaleDays === 'number' ? v.stateStaleDays : -1
+        const scanLine = stale >= 0
+          ? (stale >= 7
             ? `⚠ 距上次扫描 ${stale} 天（>7 天未扫；本插件不内建定时器，需手动触发 radar_scan）`
-            : `距上次扫描 ${stale} 天`
+            : `距上次扫描 ${stale} 天`)
+          : stateStale >= 0
+            ? `距上次扫描：轨迹无 scan 记录（轨迹层 2026-09-14 上线）· 状态文件最后写入 ${stateStale} 天前（可能是 radar_mark，不等于扫描）`
+            : '距上次扫描：无记录（轨迹与状态文件均不可读）'
         return [{ type: 'text', text: `【雷达摘要 · ${today}】\n` + scanLine + '\n' + lines.join('\n') + `\n${v.summary ?? ''}` }]
       },
     },
@@ -568,10 +573,17 @@ export function apply(ctx: Context, config: Config): void {
       // 判据源 = 自证轨迹的 `scan/*` 相位（不是 jobs.json mtime——那次写入也可能来自 radar_mark）。
       const scanAtMs = lastScanAt(radarTracePath(resolveHome()))
       const staleDays = scanAtMs === null ? -1 : Math.max(0, Math.floor((now.getTime() - scanAtMs) / 86400000))
+      // 降级旁证（2026-09-14 二次修订）：轨迹层上线之前的扫描没有 scan/* 行 ⇒ 主判据为 null 时，
+      // 用**状态文件 mtime** 兜底回答「至少有多久没动过」，并**如实标注它可能是 radar_mark 而非扫描**。
+      // 为什么不让 mtime 当主判据：它混淆「扫过」与「标过」——那正是 C2「判据单一真源」要避免的。
+      const stateMtimeMs = mtimeOf(statePath)
+      const stateStaleDays = stateMtimeMs === 0 ? -1 : Math.max(0, Math.floor((now.getTime() - stateMtimeMs) / 86400000))
       const summary =
         `今日新增高分 ${highlights.length} 条` +
         (pendingFollowups.length > 0 ? ` · ${pendingFollowups.length} 条待跟进` : '') +
-        (scanAtMs === null ? ' · 无扫描记录' : staleDays >= 7 ? ` · ⚠ 距上次扫描 ${staleDays} 天` : ' · 雷达正常巡检')
+        (scanAtMs === null
+          ? (stateStaleDays >= 7 ? ` · ⚠ 状态文件 ${stateStaleDays} 天未更新` : ' · 无扫描记录')
+          : staleDays >= 7 ? ` · ⚠ 距上次扫描 ${staleDays} 天` : ' · 雷达正常巡检')
       return {
         ok: true,
         date: now.toISOString(),
@@ -580,6 +592,8 @@ export function apply(ctx: Context, config: Config): void {
         summary,
         lastScanAt: scanAtMs === null ? '' : new Date(scanAtMs).toISOString(),
         staleDays,
+        stateWrittenAt: stateMtimeMs === 0 ? '' : new Date(stateMtimeMs).toISOString(),
+        stateStaleDays,
       }
     },
   }))
