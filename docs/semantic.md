@@ -215,6 +215,7 @@
 | A19 | 脏数据丢弃数与依据可读 | `source/end` 行 `raw/hits/dropped/reasons`（如 `{raw:3,hits:1,dropped:2,reasons:{'bad-entry':2}}`）；四个 `parse*Detailed` 的 `reasons` 键枚举见 §4.5 | ✅ 2026-09-14 |
 | A20 | **观测不反噬**（含接线级尸体测试） | `DSH_HOME` 父路径是普通文件 → `radarTrace` 返回 `false` 且不抛；`radar_scan` 照常 `ok:true` 且 `added` 不变 | ✅ 2026-09-14 |
 | A21 | 入库闭环可解释（`scan/end`） | 首轮 `fetched=added=5, dups=0`；第二轮同数据 `added=0, dups=5, sourcesFailed=0` | ✅ 2026-09-14 |
+| A22 | **停摆可见**（2026-09-14 第 1 组漂移修复新增） | 轨迹里补一行 9 天前的 `scan/end` → `radar_digest.staleDays=9`、`summary` 含「距上次扫描 9 天」、render 出 `⚠`；轨迹**只有 `boot` 行**（`apply` 启动即写）→ `staleDays=-1`、render 出「无记录」 | ✅ 2026-09-14（接线用例「radar_digest 主动说出『距上次扫描 N 天』」） |
 | A22 | **搬家零漂移（机械核对）** | HEAD 版 `sources.ts`（node 类型剥离直跑）与 `lib/sources.js` 在 **17 组输入**（含 `null` 元素、脏日期、重复 id、空 XML）上结果（含抛错类型）逐字相同 → `对比次数=17 不等价=0` | ✅ 2026-09-14 |
 
 ## 8 · 与实现的关系
@@ -229,13 +230,21 @@
 - 未实现/未验证部分**显式标注**：
   - ~~**无 `tests/`**：A1–A10 全部待验收。~~ 已补（A11–A15 已验证）；A1–A5/A7–A10 属**接线/线上**行为，仍需真实调用验收（不属离线单测面）。
   - `TECH_RE`（RemoteOK 技术岗过滤）是**无词界子串匹配**：`'ai'` 会命中 `"mAIntenance"`、`'dev'` 会命中 `"devops"` 之外的各种词——已知**过滤过宽**（噪音岗漏网），单测已把该真实语义锁住（`tests/sources.test.mjs` + `tests/trace.test.mjs` 的「Hotel Maintenance Technician 被保留」样本），收紧会改筛选行为故未改，见 §10 U7。
-  - `radar_mark` 的 description 提到「可用 **`radar_find`** 查」——**该工具不存在**（实际只有 4 个工具）；文案与工具面不一致。
-  - `radar_scan` 的 `push` 参数**未被 `execute` 消费**（`args` 未读 push；render 也无分支），描述与实际行为不符。
+  - ~~`radar_mark` 的 description 提到「可用 **`radar_find`** 查」——**该工具不存在**（实际只有 4 个工具）；文案与工具面不一致。~~ **已修 2026-09-14**：描述改指 `radar_list` 返回项的 `id` 字段，且 `radar_list` 的 render **真的输出 `id:`**（只改描述不变工具面＝半吊子修复）。
+  - ~~`radar_scan` 的 `push` 参数**未被 `execute` 消费**（`args` 未读 push；render 也无分支），描述与实际行为不符。~~ **已修 2026-09-14**：**删除**该参数（不补实现）——本工具按设计不发送任何消息，推送归爱丽丝 `telegram_send`。
   - `Config.rssSources` **未被消费**；`RadarProfile.pages` 默认 5，但 `fetchEleduck` 内 `if (page >= 2) break` 使电鸭**最多只抓 2 页**。
-  - README 与源码头部引用的设计文档 `docs/freelance-radar-design.md` 在本仓库中**不存在**（`scoring.ts` 头部仍指向它）。
-  - README 写「v1 = 电鸭 API（+RSS 预留）」，实现已接入 4 源（电鸭/RemoteOK/Remotive/WWR）。
+  - ~~README 与源码头部引用的设计文档 `docs/freelance-radar-design.md` 在本仓库中**不存在**（`scoring.ts` 头部仍指向它）。~~ **已勘误 2026-09-14**：设计文档**存在**，位于**工作区** `E:\alice\docs\freelance-radar-design.md`（不在本插件仓内）——原标题里的「不存在」是**相对路径视角**造成的误判；实际只有两处源码头部（`index.ts` / `scoring.ts`）引用它，**README 并未引用**（§8 原表述把这半句也写错了）。两处头部路径已改指真实位置。
+  - ~~README 写「v1 = 电鸭 API（+RSS 预留）」，实现已接入 4 源（电鸭/RemoteOK/Remotive/WWR）。~~ **已勘误 2026-09-14**：README 现已写明「电鸭 + RemoteOK / Remotive / WeWorkRemotely」四源（README 收口轮次已改），本条声明**过期**。
 
 ## 9 · 实践修订记录
+
+- **2026-09-14 修 §8 登记的四条「声称 vs 实现」漂移（`t-490458d8` 第 1 组）**
+  - ① **`radar_find` 幻影工具**：`radar_mark.jobId` 描述改指 `radar_list` 的 `id` 字段，并**同时**让 `radar_list` 把 `id` 输进工具面（原 render 只有 title/url/分数——只改描述会让「用 id 标记」无从下手）。
+  - ② **未消费的 `push` 参数**：**删除**（不补实现）。本工具按设计不发送任何消息，推送归爱丽丝 `telegram_send`；留一个永不生效的参数只是谎。
+  - ③ **「雷达 9 天未扫」定性纠正 + 停摆可见化**：实测 `src` 无定时器、计划任务无 radar、`life-core` 不引用它，且**设计文档 §5 明写「不内建定时器（自主性铁律）——感知圈/主人手动触发」** ⇒ 这**不是**「机制静默停摆」，而是**手动触发模式的必然结果**；**真缺口是「停摆不可见」**（没有任何面会说「N 天没扫了」）。修法：`radar_digest` 新增 `lastScanAt` / `staleDays`，判据源 = **自证轨迹的 `scan/*` 相位最大 `atMs`**（不是 `jobs.json` mtime——那次写入也可能来自 `radar_mark`），`≥7` 天在 render + summary 里响亮告警，无记录 → `-1` 且明说「无记录」。
+  - ④ **设计文档路径**：`docs/freelance-radar-design.md` 实际在**工作区** `E:\alice\docs\`（不在插件仓内），两处源码头部已改指真实路径；并勘误 §8 的「README 也引用」半句（README 未引用）。
+  - 测试 **61 → 65**（`lastScanAtMs` 纯函数 2 例 + digest 接线 1 例，含「只有 `boot` 行 ≠ 扫过」判据）。
+  - 教训：**先复现再改，连「任务描述」一起复现**——本条任务描述里的两点（雷达停摆＝机制故障、设计文档不存在）都被现场证据推翻，照抄描述会写出错误的修复方向。
 
 - **2026-09-14 验收复跑抓到「非确定性测试」（可维护性补课的交付缺陷）**
   - 症状：S4 批次自报 `61/61 全绿`，派发者独立复跑得到 `60/61`；连跑 8 轮有 1 轮红。**一条会随机红的套件，「全绿」这个结论本身就不可信。**
@@ -275,7 +284,7 @@
 - **U8 `parseEleduckPosts([null])` 抛 TypeError（D4 脏数据不设防，S4-C 登记，未改）**：机械核对证明新旧同抛（非本次引入）。后果：旧实现里整源静默消失；现在留一行 `source/error`（`failure:'unknown'`）。倾向：与 W3 的 `toIso` 同类修法——转换器入口加 `if (p === null || typeof p !== 'object') return null`（需显式批准，属行为变更：脏元素从「炸整源」变为「跳过该条」）。
 - **U9 轨迹文件无轮转**（2026-09-14 S4-C 新增）：`<DSH_HOME>/freelance-radar-trace.jsonl` 追加写、无上限。粗算每轮 ~6 行 × ~300B；按日巡检量级可忽略，但长期仍需有界裁剪（同其它 `*-trace.jsonl` 现状）。
 - **U10 线上轨迹验收未做**（2026-09-14 S4-C）：A17 的「线上」一半要等部署 + 重启后 `tail` 真实文件才能标 ✅（本批次不部署，派发纪律）。
-- **U2 `radar_find` 幻影工具**：描述让读者去调一个不存在的工具。倾向：改为「用 `radar_list` 看 id」或真的实现 `radar_find`（按标题模糊查）。
+- ~~**U2 `radar_find` 幻影工具**：描述让读者去调一个不存在的工具。倾向：改为「用 `radar_list` 看 id」或真的实现 `radar_find`（按标题模糊查）。~~ → **已闭环 2026-09-14（`t-490458d8`）**：描述改指 `radar_list` 的 `id` 字段 + `radar_list` render 真的输出 `id:`。
 - **U3 坏状态文件直接丢弃**：`loadState` 解析失败即重置，历史去重表蒸发。倾向：改为「重命名为 `jobs.json.corrupt-<ts>` + 落 issue」，符合「不许静默」。
 - **U4 `saveState` 静默失败**：写盘失败被吞，表现为「标记成功但重启即失」。倾向：返回 bool 并在工具结果里带 `persisted:false`。
 - **U5 `pages` 与 `page>=2 break` 冲突**：配置项形同虚设。倾向：删 `pages` 或让它真正生效（需先评估电鸭限流）。

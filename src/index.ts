@@ -2,7 +2,7 @@
  * dsh-freelance-radar — 自由职业任务雷达插件
  *
  * 主人 2026-09-03 指示：信息收集 + 自主规划 + 自行决定开工。
- * 设计文档：docs/freelance-radar-design.md
+ * 设计文档：E:\alice\docs\freelance-radar-design.md（工作区 `docs/`，**不在本插件仓内**）
  *
  * 职责：聚合公开远程任务源（v1 = 电鸭 API + RSS）→ 按主人能力画像
  * （AI/Agent/LLM + 排除词）打分筛选 → 工具面呈现 + digest 摘要。
@@ -38,6 +38,7 @@ import type { EleduckRawPost, RemoteOKJob, RemotiveJob } from './sources.ts'
 import {
   addReason, classifyFailure, clip, emptyStats, finalizeStats, mergeStats,
   radarTrace, radarTraceBoot, traceEnabled, traceSourceReport,
+  lastScanAt, radarTracePath, resolveHome,
 } from './trace.ts'
 import type { RadarStats, SourceReport } from './trace.ts'
 
@@ -354,10 +355,8 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'radar_scan',
-    description: '任务雷达·采集扫描：抓取远程任务源（电鸭 API）最新任务 → 入库去重 → 按主人能力画像（AI/Agent/LLM 关键词+排除词）打分排序 → 返回高分清单。采集后可用 radar_list 细看、radar_mark 标记；如需推送到 telegram 由爱丽丝调用 telegram_send。',
-    parameters: {
-      push: { type: 'boolean', description: 'true=扫描后把 top 高分任务摘要准备好（返回 render 含推送文案），实际发送仍由爱丽丝 telegram_send 执行' },
-    },
+    description: '任务雷达·采集扫描：抓取远程任务源（电鸭 API）最新任务 → 入库去重 → 按主人能力画像（AI/Agent/LLM 关键词+排除词）打分排序 → 返回高分清单。采集后可用 radar_list 细看、radar_mark 标记；**本工具不发送任何消息**——推送到 telegram 由爱丽丝调用 telegram_send 执行。',
+    parameters: {},
     output: {
       schema: {
         type: 'object',
@@ -380,7 +379,7 @@ export function apply(ctx: Context, config: Config): void {
         return [{ type: 'text', text }]
       },
     },
-    async execute(args: { push?: boolean }) {
+    async execute() {
       if (!config.enabled) return { ok: false, error: 'freelance-radar disabled' }
       const { jobs, added, total } = await scanAll()
       const topJobs = jobs.slice(0, 15).map((s) => ({
@@ -419,7 +418,7 @@ export function apply(ctx: Context, config: Config): void {
         const lines = jobs.map((s: any, i: number) => {
           const st = s.status ?? 'new'
           const mark = st === 'considered' ? '🤔' : st === 'applied' ? '📮' : st === 'ignored' ? '🙈' : '🆕'
-          return `${mark} [${st}] ${s.title}\n   分数:${s.lastScore ?? '?'} 标签:${(s.tags ?? []).slice(0, 4).join('/') || '-'}\n   ${s.url}`
+          return `${mark} [${st}] ${s.title}\n   id:${s.id ?? '?'} 分数:${s.lastScore ?? '?'} 标签:${(s.tags ?? []).slice(0, 4).join('/') || '-'}\n   ${s.url}`
         })
         return [{ type: 'text', text: `雷达任务(${v.total ?? 0} 条，显示 ${jobs.length}):\n` + lines.join('\n') }]
       },
@@ -435,6 +434,7 @@ export function apply(ctx: Context, config: Config): void {
       const scored = filtered.map((s) => {
         const sc = scoreJob(s.job, profile)
         return {
+          id: s.job.id,
           title: s.job.title,
           url: s.job.url,
           source: s.job.source,
@@ -467,7 +467,7 @@ export function apply(ctx: Context, config: Config): void {
     name: 'radar_mark',
     description: '任务雷达·标记状态：considered=考虑中（准备投）/ applied=已投递 / ignored=忽略（不再推送）。主人决策留痕。',
     parameters: {
-      jobId: { type: 'string', required: true, description: '任务 id（radar_list 返回的 title 对应的 job id，可用 radar_find 查；格式 eleduck-xxx）' },
+      jobId: { type: 'string', required: true, description: '任务 id（radar_list 返回项里的 id 字段；格式 eleduck-xxx）' },
       status: { type: 'string', required: true, enum: ['considered', 'applied', 'ignored'], description: '目标状态' },
       note: { type: 'string', description: '备注（如 已发 proposal / 不合适原因）' },
     },
@@ -513,6 +513,8 @@ export function apply(ctx: Context, config: Config): void {
           highlights: { type: 'json' },
           pendingFollowups: { type: 'json' },
           summary: { type: 'string' },
+          lastScanAt: { type: 'string' },
+          staleDays: { type: 'number' },
         },
       },
       render: (_a: unknown, v: any) => {
@@ -529,7 +531,13 @@ export function apply(ctx: Context, config: Config): void {
           for (const p of pf) lines.push(`  ⏰ ${p.title}（${p.consideredDays}天前标记，${p.note ?? '无备注'}）\n     ${p.url}`)
         }
         if (lines.length === 0) lines.push('今日无高分新任务、无待跟进——雷达平静。')
-        return [{ type: 'text', text: `【雷达摘要 · ${today}】\n` + lines.join('\n') + `\n${v.summary ?? ''}` }]
+        const stale = typeof v.staleDays === 'number' ? v.staleDays : -1
+        const scanLine = stale < 0
+          ? '距上次扫描：无记录（轨迹为空或不可读）'
+          : stale >= 7
+            ? `⚠ 距上次扫描 ${stale} 天（>7 天未扫；本插件不内建定时器，需手动触发 radar_scan）`
+            : `距上次扫描 ${stale} 天`
+        return [{ type: 'text', text: `【雷达摘要 · ${today}】\n` + scanLine + '\n' + lines.join('\n') + `\n${v.summary ?? ''}` }]
       },
     },
     async execute() {
@@ -555,16 +563,23 @@ export function apply(ctx: Context, config: Config): void {
         .filter((x) => x.consideredDays >= 3)
         .sort((a, b) => b.consideredDays - a.consideredDays)
         .slice(0, 5)
+      // 停摆可见性（2026-09-14）：本插件按设计不内建定时器（手动触发），
+      // 「多久没扫过」既不会自己报警也不会被健康检查发现 → 由巡检面自己说出来。
+      // 判据源 = 自证轨迹的 `scan/*` 相位（不是 jobs.json mtime——那次写入也可能来自 radar_mark）。
+      const scanAtMs = lastScanAt(radarTracePath(resolveHome()))
+      const staleDays = scanAtMs === null ? -1 : Math.max(0, Math.floor((now.getTime() - scanAtMs) / 86400000))
       const summary =
         `今日新增高分 ${highlights.length} 条` +
         (pendingFollowups.length > 0 ? ` · ${pendingFollowups.length} 条待跟进` : '') +
-        ' · 雷达正常巡检'
+        (scanAtMs === null ? ' · 无扫描记录' : staleDays >= 7 ? ` · ⚠ 距上次扫描 ${staleDays} 天` : ' · 雷达正常巡检')
       return {
         ok: true,
         date: now.toISOString(),
         highlights: JSON.parse(JSON.stringify(highlights)),
         pendingFollowups: JSON.parse(JSON.stringify(pendingFollowups)),
         summary,
+        lastScanAt: scanAtMs === null ? '' : new Date(scanAtMs).toISOString(),
+        staleDays,
       }
     },
   }))

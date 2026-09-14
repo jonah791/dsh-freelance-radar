@@ -25,10 +25,10 @@
 
 | 工具 | 用途 |
 |------|------|
-| `radar_scan` | 采集全部源最新任务 → 指纹去重入库 → 按画像打分排序 → 返回 top **15** 高分清单（跳过 `ignored` 与已关闭任务） |
-| `radar_list` | 查看已收集任务：按状态（`new`/`considered`/`applied`/`ignored`）/ 来源 / `minScore` 过滤；`limit` 夹在 `[1,100]`（缺省 20） |
+| `radar_scan` | 采集全部源最新任务 → 指纹去重入库 → 按画像打分排序 → 返回 top **15** 高分清单（跳过 `ignored` 与已关闭任务）；**不发送任何消息**——推送由爱丽丝 `telegram_send` 执行（无 `push` 参数） |
+| `radar_list` | 查看已收集任务：按状态（`new`/`considered`/`applied`/`ignored`）/ 来源 / `minScore` 过滤；`limit` 夹在 `[1,100]`（缺省 20）；render 每项带 **`id:`**（直接喂给 `radar_mark`） |
 | `radar_mark` | 主人决策留痕：`considered`（考虑中）/ `applied`（已投递）/ `ignored`（忽略，不再推送），可附 `note` |
-| `radar_digest` | 今日摘要：今天新增且达 `minScore` 的高分任务（前 5）+ `considered` 超 **3 天**未 `applied` 的待跟进项（前 5） |
+| `radar_digest` | 今日摘要：今天新增且达 `minScore` 的高分任务（前 5）+ `considered` 超 **3 天**未 `applied` 的待跟进项（前 5）+ **扫描新鲜度** `lastScanAt`/`staleDays`（取自自证轨迹的 `scan/*` 相位；`≥7` 天响亮告警，无记录 → `-1`） |
 
 ## 打分规则（`scoring.ts`）
 

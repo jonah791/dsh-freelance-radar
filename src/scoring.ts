@@ -1,7 +1,7 @@
 /**
  * dsh-freelance-radar — 纯逻辑层（打分/过滤/类型，零 IO，可离线单测）
  *
- * 设计文档：docs/freelance-radar-design.md §3.2 / §3.3
+ * 设计文档：E:\alice\docs\freelance-radar-design.md（工作区 `docs/`，**不在本插件仓内**）§3.2 / §3.3
  */
 
 // ---------- 类型 ----------

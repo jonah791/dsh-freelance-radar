@@ -273,6 +273,28 @@ export function readTraceEntries(path: string): RadarTraceEntry[] {
   }
 }
 
+/**
+ * 最近一次扫描时刻（ms epoch；无 `scan/*` 行 → `null`）。
+ *
+ * 判据单一真源：相位名复用 `RadarTracePhase`，不另立字符串常量。
+ * 存在理由（2026-09-14）：本插件**按设计不内建定时器**（手动触发，见设计文档 §5），
+ * 于是「多久没扫过」既不会自己报警、也不会被任何健康检查发现——必须由巡检面主动说出来。
+ */
+export function lastScanAtMs(entries: RadarTraceEntry[]): number | null {
+  let max: number | null = null
+  for (const e of entries) {
+    if (e.phase !== 'scan/start' && e.phase !== 'scan/end') continue
+    if (typeof e.atMs !== 'number' || !Number.isFinite(e.atMs)) continue
+    if (max === null || e.atMs > max) max = e.atMs
+  }
+  return max
+}
+
+/** 轨迹文件里的最近扫描时刻（读不到 / 无 `scan/*` 行 → `null`）。 */
+export function lastScanAt(path: string): number | null {
+  return lastScanAtMs(readTraceEntries(path))
+}
+
 /** 追加一行（失败即吞并返回 false：轨迹是观测，绝不因写不进去而影响扫描结果）。 */
 export function appendTraceEntry(path: string, entry: RadarTraceEntry): boolean {
   try {

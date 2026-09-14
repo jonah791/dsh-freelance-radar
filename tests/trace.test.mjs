@@ -18,6 +18,8 @@ import {
   clip,
   emptyStats,
   finalizeStats,
+  lastScanAt,
+  lastScanAtMs,
   mergeStats,
   parseTraceEntries,
   radarTrace,
@@ -441,6 +443,52 @@ test('尸体测试（接线级）：DSH_HOME 不可写时扫描照常返回（�
     globalThis.fetch = original
     process.env['DSH_HOME'] = join(tmp, 'home')
   }
+})
+
+// ---------- 最近扫描时刻（停摆可见性，2026-09-14） ----------
+
+test('lastScanAtMs：只认 scan/* 相位并取最大 atMs——boot/source 行不算「扫过」', () => {
+  assert.equal(lastScanAtMs([]), null)
+  // 只有 boot（进程启动）与 source 行（抓取细节）→ 判「没扫过」，不得把启动当扫描
+  assert.equal(lastScanAtMs([base({ phase: 'boot' }), base({ phase: 'source/end' })]), null)
+  const entries = [
+    base({ phase: 'boot', atMs: 5_000 }),
+    base({ phase: 'scan/start', atMs: 1_000 }),
+    base({ phase: 'scan/end', atMs: 2_000 }),
+    base({ phase: 'scan/start', atMs: 9_000 }),
+    base({ phase: 'source/error', atMs: 9_500 }),   // 更晚，但不是扫描相位
+  ]
+  assert.equal(lastScanAtMs(entries), 9_000)
+  assert.equal(lastScanAtMs([base({ phase: 'scan/end', atMs: Number.NaN })]), null, '脏 atMs 不算数')
+})
+
+test('退化：lastScanAt 喂缺失文件/坏行 → null（诊断入口不抛）', () => {
+  assert.equal(lastScanAt(join(tmp, 'no-such-trace-file.jsonl')), null)
+  const p = join(tmp, 'partial-scan-trace.jsonl')
+  writeFileSync(p, '{"atMs":1700000000000,"phase":"scan/end"}\nnot-json\n{"phase":"scan/start"}\n', 'utf8')
+  assert.equal(lastScanAt(p), 1_700_000_000_000, '坏行跳过；第三行缺 atMs 被解析层丢弃')
+})
+
+test('接线：radar_digest 主动说出「距上次扫描 N 天」——手动模式的停摆不再无声', async () => {
+  const home = join(tmp, 'digest-stale')
+  process.env['DSH_HOME'] = home
+  const { ctx, registered } = makeCtx()
+  apply(ctx, { enabled: true, dataDir: join(home, 'freelance-radar') })
+  const digest = registered.find((t) => t.name === 'radar_digest')
+
+  // ① 只有 apply 自己写的 boot 行 → 「无扫描记录」（不得把进程启动过当成扫过）
+  const fresh = await digest.execute({})
+  assert.equal(fresh.staleDays, -1)
+  assert.equal(fresh.lastScanAt, '')
+  assert.match(digest.output.render({}, fresh)[0].text, /无记录/)
+
+  // ② 补一行 9 天前的 scan/end → staleDays=9 且 render 响亮告警（阈值 7 天）
+  const nineDaysAgo = Date.now() - 9 * 86400000
+  writeFileSync(radarTracePath(home), JSON.stringify(base({ phase: 'scan/end', atMs: nineDaysAgo })) + '\n', 'utf8')
+  const stale = await digest.execute({})
+  assert.equal(stale.staleDays, 9)
+  assert.match(stale.summary, /距上次扫描 9 天/)
+  assert.match(digest.output.render({}, stale)[0].text, /⚠ 距上次扫描 9 天/)
 })
 
 test('cleanup', () => {
