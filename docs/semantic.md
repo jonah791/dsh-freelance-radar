@@ -120,19 +120,59 @@
 | 模型（爱丽丝） | 决策链：`radar_scan` → `radar_list` → `radar_mark(considered/applied/ignored)` | 主人决定时 |
 | 运行时数据（实测 2026-09-14） | `<DSH_HOME>/freelance-radar/jobs.json` = **298 KB**，mtime **2026-09-05 18:04** → 即「雷达自 09-05 后未再扫描」（库内是历史任务快照） | 现状快照 |
 
+### 4.5 观测轨迹契约（S4 证据层 · 2026-09-14）
+
+**落盘路径（单一真源）**：`<DSH_HOME>/freelance-radar-trace.jsonl`——`DSH_HOME` 由 `src/trace.ts:resolveHome()`（环境变量 → 回退 `<homedir>/.dsh`）解析，`radarTracePath(home)` 是唯一文件名来源。一行一阶段（单行 JSON，可 `tail`/`grep`），追加写，无轮转。开关 `DSH_RADAR_TRACE=0`（缺省开启）。**与业务落库分离**：`jobs.json` 是数据，轨迹是证据（前者坏了重置、后者坏了只丢证据）。
+
+**阶段枚举**：`boot`（`apply` 一行：enabled/dataDir/apiBase/源清单/pages/minScore）｜`scan/start`（一轮扫描开始）｜`source/end`（某源成功，**每个源一行**）｜`source/error`（某源失败/抛错，**每个源一行**）｜`scan/end`（本轮收尾：抓取/新增/重复/在库/源成败计数）。
+
+**核心不变式（MUST）**：`SOURCE_NAMES`（4 源）有几条，本轮 `source/*` 行就**必须**有几条——任何源失败（含 `Promise.allSettled` 的 rejected）都**必有一行**。这条不变式由 `traceSourceReport()` 单一函数收口，并由接线测试断言（A16/A18）。它的价值来自真事故：脏日期 `RangeError` 曾让**整源被 `if (r.status === 'fulfilled')` 静默丢弃**，外部表现为「今天没新任务」。
+
+**行 schema**（键序固定，可选字段按序前插）：
+
+| 字段 | 语义 | 五问 |
+|------|------|------|
+| `atMs` / `pid` / `build` | 写入时刻 / 进程 pid / `<version>@<lib/trace.js mtime ms>` | Q1 |
+| `source` | 源名（`eleduck`/`remoteok`/`remotive`/`wwr`）；`scan/*`、`boot` 行省略 | Q2 |
+| `phase` / `failure?` / `error?` | 阶段枚举 / 失败分类（`http-4xx`\|`http-5xx`\|`dns`\|`refused`\|`timeout`\|`network`\|`parse`\|`abort`\|`unknown`）/ 原文裁剪 200 字符 | Q3 |
+| `raw` / `hits` / `dropped` / `reasons?` | 源原始条数 / 清洗后条数 / 丢弃总数 / **丢弃依据**（键：`bad-entry`\|`duplicate`\|`non-tech`\|`metadata`\|`bad-item`\|`empty`） | Q4 |
+| `fetched` / `added` / `dups` / `live` / `sourcesOk` / `sourcesFailed` | 仅 `scan/end`：本轮抓取 / 新入库 / 已存在跳过 / 在库 / 成功源数 / 失败源数 | Q4 |
+| `durationMs` | 阶段耗时（每源实耗 / 整轮实耗；`scan/start` = 0） | Q5 |
+| `cfg?` | 仅 `boot` | Q1 |
+
+**判读口诀（Q4）**：`added == 0` 且 `sourcesFailed == 0` ⇒ **真的没新任务**；`sourcesFailed > 0` ⇒ **有源挂了**（再看该源那行的 `failure`/`error`）；`dups == fetched` ⇒ 数据没变（不是没抓）。
+
+**隐私不变量（MUST）**：轨迹只记**计数与源名**——任务标题/正文/URL **不落盘**（正文可能含联系方式等个人信息，落库路径 `jobs.json` 由业务负责）；`boot` 只记白名单配置字段，**不记 `profile` 全文**。
+
+**行为中立（2026-09-14 显式声明）**：本次**不改采集行为**——失败源仍贡献 0 条（与旧实现一致），`fetchJson/fetchText` 改成「可判别结果」只影响**是否留痕**，不影响喂给 `ingest` 的任务集合（唯一例外见 §9：`null` 元素仍会抛，与旧实现逐字一致，只是现在**有行可见**）。
+
+**调用点清单（MUST）**：
+
+| 调用点（文件:符号） | 阶段 | 内容 |
+|---|---|---|
+| `src/index.ts:apply` → `radarTraceBoot({enabled,dataDir,eleduckApiBase,sources,pages,minScore})` | `boot` | 生效面自报（一次装载一行） |
+| `src/index.ts:scanAll` → `radarTrace({phase:'scan/start'})` / `{phase:'scan/end',…}` | `scan/start` / `scan/end` | 一轮扫描的头尾（含入库闭环计数） |
+| `src/index.ts:scanAll` → 遍历 `reports` 调 `traceSourceReport(report)`（**唯一逐源落笔点**） | `source/end` / `source/error` | 每源一行 |
+| `src/index.ts:fetchAllSources` → `runOne(name, fn)` | — | 逐源兜错 + 计时，把「源抛错」变成一条报告 |
+| `src/index.ts:fetchJson/fetchText` → `fetchRaw(url, timeoutMs, take)` | — | HTTP/网络失败 → `{ok:false, failure, error}`（不再吞成 `null`） |
+| `src/sources.ts:parse*Detailed` → `stats` | — | 四个解析器带出 `raw/kept/dropped/reasons`；原名函数为薄委托（行为逐字一致） |
+| `src/trace.ts:finalizeStats/addReason/mergeStats` ← `fetchEleduck` | — | 跨页去重后 `kept` 以最终产出为准、丢弃依据相加 |
+
 ## 5 · 边界与信任
 
 - 能力边界 ≠ 沙箱：本插件会**主动出网**（4 个域名）并把摘要写入本地 JSON。它**不**校验抓到的内容（陌生 HTML → `stripHtml` 粗去标签，可能残留脚本文本），也不做输入转义。
 - 不越界清单：不登录、不带凭据、不提交表单；不自动投标；不发消息；不抓付费/私有接口。
 - 失败面：
-  - 网络失败 → 各 `fetch*` 内部 catch → 返回 `[]`（**放行 + 静默降级**，`radar_scan` 仍 `ok:true`）；这意味着「源全挂」与「今日无任务」在返回值上难区分（见 §10 U1）。
+  - 网络失败 → 各 `fetch*` 记录 `{ok:false, failure, error}` 并返回 0 条（**放行 + 静默降级**，`radar_scan` 仍 `ok:true`）；**「源全挂」与「今日无任务」在返回值上仍难区分，但在轨迹上一眼可分**（§4.5：`sourcesFailed` vs `added=0`）。
+  - 源抛错（如脏元素 `null` → TypeError）→ 旧实现被 `Promise.allSettled` 静默丢弃；现同样不贡献任务，但**必留一行 `source/error`**。
   - 存储损坏 → `loadState` catch → 重置为空（**丢弃**，不备份）。
   - 存储写失败 → `saveState` catch → 静默（**不报错**）。
+  - 轨迹写失败 → `radarTrace` 吞错返回 `false`（**不影响扫描**，见 A20）。
   - 缺 `HOME` 之类环境问题 → `dshHome()` 用 `homedir()` 兜底。
 
 ## 6 · 与既有机制的关系
 
-- 与 **AGENTS.md §5.22（机制自证）**：本能力**有落盘产物**（`jobs.json` 含 `firstSeenAt/updatedAt/status/note`），可直接 `tail`/`jq` 观察；但**无 sidecar 轨迹**（抓了哪些源、各源几条、失败了几条 → 未落盘）。
+- 与 **AGENTS.md §5.22（机制自证）**：本能力**有落盘产物**（`jobs.json` 含 `firstSeenAt/updatedAt/status/note`），可直接 `tail`/`jq` 观察；**并有 sidecar 轨迹**（`<DSH_HOME>/freelance-radar-trace.jsonl`：每源一行 + 每轮收尾，见 §4.5）——「抓了哪些源、各源几条、失败了几条、丢了多少脏数据」从此可一条 `tail` 回答。
 - 与 **`dsh-agent-telegram`**：分工 = 雷达准备文案、爱丽丝调 `telegram_send` 发送（推送到主人频道）。
 - 与 **`dsh-agent-memory`**：雷达状态在 `jobs.json`（结构化），不写记忆库——「发生过什么」可选进记忆，但雷达本身不自动写。
 - 与 **§5.11（组合变更必验证）**：改 `src/*.ts` → `pnpm build`（`tsc -p tsconfig.json`）→ 预检看到 `lib/` mtime 前进。
@@ -144,8 +184,10 @@
 3. 行为可答：`radar_scan` 返回 `ok:true` 且 `total>0`（本机 `jobs.json` 已有历史任务），`added` 可为 0。
 4. 落盘产物：调用后 `<DSH_HOME>/freelance-radar/jobs.json` 的 **mtime 前进**且 JSON 可解析（这是唯一不依赖内存的物证）。
 5. 打分自证：对同一 job 连续调 `radar_list minScore=X` 取不同 X，`lastScore` 稳定不跳变（说明 `scoreJob` 无隐式状态）。
+6. **证据层自证（2026-09-14 新增）**：一轮 `radar_scan` 后 `tail -6 "$DSH_HOME/freelance-radar-trace.jsonl"` 出现 `scan/start` + **4 行 `source/*`（源名各异）** + `scan/end`，且 `scan/end.build` 的 mtime 段 == `stat -c %Y lib/trace.js`×1000。
+7. **一命令判读（Q4 口诀）**：`tail -1 … | grep '"phase":"scan/end"'` → `sourcesFailed>0` ⇒ 有源挂了；`sourcesFailed=0 且 added=0` ⇒ 真没新任务。
 
-**回退**：`git revert` 最近提交 → `pnpm build` → 预检 → 哨兵重启 web。
+**回退**：`git revert` 最近提交 → `pnpm build` → 预检 → 哨兵重启 web。**只关证据层**：`DSH_RADAR_TRACE=0`（不触业务代码）。
 **数据面回退**：`jobs.json` 是纯本地状态，备份/还原该文件即可（`status`/`note` 全部在里面）；代码回退**不会**破坏已有状态（`loadState` 对未知字段宽容）。
 
 ## 7 · 可证伪验收清单
@@ -167,17 +209,26 @@
 | A13 | 源解析器对脏数据保守返回（不抛） | `tests/sources.test.mjs`：缺 id/title、类型不符、空标题→`null`；列表级坏条目跳过；空数组→`[]` | ✅ 2026-09-14 |
 | A14 | **脏日期不再拖垮整源**（本次修掉的真缺陷） | `node --test tests/sources.test.mjs` 三条「非法日期不得抛错」（remoteok/remotive/wwr）转绿；修复前是 `RangeError: Invalid time value` | ✅ 2026-09-14 |
 | A15 | 解析层零 IO（可离线跑） | `tests/*.test.mjs` 全程无 fetch/fs 调用（纯函数；`Date` 仅用于缺失日期回落） | ✅ 2026-09-14 |
+| A16 | **每源必有一行**（§4.5 核心不变式） | 一轮 `radar_scan` → `grep -c '"source":"' "$DSH_HOME/freelance-radar-trace.jsonl"` = 源数 × 轮数；接线测试断言 4 源 4 行（含 1 源失败时仍 4 行） | ✅ 2026-09-14（接线用例） |
+| A17 | **「源挂了」与「没新任务」可分**（原缺陷面） | 一轮扫描后 `tail -6`：`scan/end` 行 `sourcesFailed: 1` + 该源 `source/error`（`failure:'http-5xx'`, `error:'HTTP 503'`）；对照：`added=0` 且 `sourcesFailed=0` = 真没新任务 | ✅ 单测级已实测；**线上待验收**（部署后 tail 真实文件） |
+| A18 | **整源静默消失不再可能** | 源返回 `null` 元素（旧实现 TypeError → allSettled 静默丢源）→ 现在留下 `source/error`（`error` 含 `null`），其余 3 源照常入库 | ✅ 2026-09-14 |
+| A19 | 脏数据丢弃数与依据可读 | `source/end` 行 `raw/hits/dropped/reasons`（如 `{raw:3,hits:1,dropped:2,reasons:{'bad-entry':2}}`）；四个 `parse*Detailed` 的 `reasons` 键枚举见 §4.5 | ✅ 2026-09-14 |
+| A20 | **观测不反噬**（含接线级尸体测试） | `DSH_HOME` 父路径是普通文件 → `radarTrace` 返回 `false` 且不抛；`radar_scan` 照常 `ok:true` 且 `added` 不变 | ✅ 2026-09-14 |
+| A21 | 入库闭环可解释（`scan/end`） | 首轮 `fetched=added=5, dups=0`；第二轮同数据 `added=0, dups=5, sourcesFailed=0` | ✅ 2026-09-14 |
+| A22 | **搬家零漂移（机械核对）** | HEAD 版 `sources.ts`（node 类型剥离直跑）与 `lib/sources.js` 在 **17 组输入**（含 `null` 元素、脏日期、重复 id、空 XML）上结果（含抛错类型）逐字相同 → `对比次数=17 不等价=0` | ✅ 2026-09-14 |
 
 ## 8 · 与实现的关系
 
-- 主实现：`src/index.ts`（4 源网络采集 + 存储 + 4 工具）、`src/scoring.ts`（189 行纯逻辑，**零 IO**）、
-  `src/sources.ts`（数据源解析层，**零 IO**——2026-09-14 从 `index.ts` 抽出，见 §9）。
-- 测试：`tests/scoring.test.mjs`（打分/新鲜度/排名/指纹）+ `tests/sources.test.mjs`（4 源解析器），
-  `npm test` 跑 `lib/` 产物（与运行时同源）。
+- 主实现：`src/index.ts`（4 源网络采集 + 存储 + 4 工具 + **`runOne`/`scanAll` 观测接线**）、`src/scoring.ts`（189 行纯逻辑，**零 IO**）、
+  `src/sources.ts`（数据源解析层，**零 IO**——2026-09-14 从 `index.ts` 抽出，见 §9；同日新增 4 个 `parse*Detailed` 统计出口，原名函数为薄委托）、
+  `src/trace.ts`（**观测层纯函数 + 薄 IO**：`resolveHome`/`radarTracePath`/`selfBuild`/`classifyFailure`/`clip`/`mergeStats`/`finalizeStats`/`addReason`/`emptyStats`/`serializeTraceEntry`/`parseTraceEntries`/`readTraceEntries`/`appendTraceEntry`/`radarTrace`/`traceSourceReport`/`radarTraceBoot`/`traceEnabled`）。
+- 测试：`tests/scoring.test.mjs`（打分/新鲜度/排名/指纹）+ `tests/sources.test.mjs`（4 源解析器）+
+  `tests/trace.test.mjs`（**25 用例**：统计纯函数/序列化/落盘/尸体测试/每源必有行/**接线测试**——真 `apply` + 假 ctx + fetch 桩），
+  `npm test` 跑 `lib/` 产物（与运行时同源）→ **61 pass / 0 fail**（2026-09-14）。
 - 同语义副本：无。
 - 未实现/未验证部分**显式标注**：
   - ~~**无 `tests/`**：A1–A10 全部待验收。~~ 已补（A11–A15 已验证）；A1–A5/A7–A10 属**接线/线上**行为，仍需真实调用验收（不属离线单测面）。
-  - `TECH_RE`（RemoteOK 技术岗过滤）是**无词界子串匹配**：`'ai'` 会命中 `"mAIntenance"`、`'dev'` 会命中 `"devops"` 之外的各种词——已知**过滤过宽**（噪音岗漏网），单测已把该真实语义锁住（`tests/sources.test.mjs`），收紧会改筛选行为故未改，见 §10 U7。
+  - `TECH_RE`（RemoteOK 技术岗过滤）是**无词界子串匹配**：`'ai'` 会命中 `"mAIntenance"`、`'dev'` 会命中 `"devops"` 之外的各种词——已知**过滤过宽**（噪音岗漏网），单测已把该真实语义锁住（`tests/sources.test.mjs` + `tests/trace.test.mjs` 的「Hotel Maintenance Technician 被保留」样本），收紧会改筛选行为故未改，见 §10 U7。
   - `radar_mark` 的 description 提到「可用 **`radar_find`** 查」——**该工具不存在**（实际只有 4 个工具）；文案与工具面不一致。
   - `radar_scan` 的 `push` 参数**未被 `execute` 消费**（`args` 未读 push；render 也无分支），描述与实际行为不符。
   - `Config.rssSources` **未被消费**；`RadarProfile.pages` 默认 5，但 `fetchEleduck` 内 `if (page >= 2) break` 使电鸭**最多只抓 2 页**。
@@ -199,9 +250,21 @@
   - 语义**被修正（预期写错，不是代码错）**：`remotiveToJob` 的 `title` 是**先 trim 再拼 company**（`' Dev '` → `'Dev @ ACME'`）；`scoreJob` 的 `keyword` 分是**逐条关键词累加**（`'AI Agent 工程师'` 只命中 2 条 = 16 分，不是封顶 40）。两处按真实语义改写测试预期并加注释。
   - 教训：**「解析器不抛」这类不变量只有跑脏数据才暴露**——原实现路径上「日期字段缺失」有回落、`日期非法` 没有，差一个字符，线上表现却是整源静默消失。
 
+### 2026-09-14 可维护性补课（批次 S4-C）：扫描轨迹证据层 + 25 测试
+
+- 语义**被补充**：新增 §4.5「观测轨迹契约」——落盘路径 `<DSH_HOME>/freelance-radar-trace.jsonl`、阶段枚举 `boot`/`scan/start`/`source/end`/`source/error`/`scan/end`、行 schema、**每源必有行的不变式**、判读口诀、隐私不变量、调用点清单。
+- 语义**被修正（上一轮修复的「另一半」）**：W3 修掉了脏日期的 `RangeError`，但**结构性静默仍在**——`Promise.allSettled` + `if (r.status === 'fulfilled')` 意味着**任何**源抛错仍会无声消失；`fetchJson/fetchText` 把 HTTP 失败吞成 `null` ⇒「源挂了」与「没新任务」在输出上同形。本次把这条链路变成可判别 + 必留痕（`source/error` + `sourcesFailed`），**采集行为不变**。
+- 语义**被补充（真语义，与上一轮测试记录一致但更完整）**：`parseEleduckPosts([null])` **会抛 TypeError**（`p.id` on `null`）——这不是本次引入的（机械核对证明新旧同抛），是 D4 类「脏数据不设防」。区别在于：旧实现里它等于整源消失，现在**留一行 `source/error`**（failure 分类为 `unknown`，因为 TypeError 文案无可分类特征）。列为 U8。
+- 语义**被补充（零漂移的机械证据）**：四个 `parse*` 逻辑搬进 `*Detailed` 后原名函数成薄委托；用 **HEAD 版 `sources.ts`（node 类型剥离直跑）与 `lib/sources.js` 在同一批输入上比对结果（含抛错类型）**——17 组 0 差异（A22）。第一版脚本因「旧实现抛错」直接崩掉，恰好证明了这条路径的存在——**把崩溃当成一种结果来比较**才对。
+- 教训：**`Promise.allSettled` 的 `fulfilled` 过滤是静默数据丢失的常见形状**——它的语义是「我不在乎哪个源失败」，而运维的语义是「我必须知道哪个源失败」。两者不冲突的解法不是改控制流，而是**给每个 settle 结果一条留痕**。
+
 ## 10 · 未决问题
 
 - **U1 源全挂 vs 今日无任务不可区分**：`fetch*` 失败一律返回 `[]`，`radar_scan` 仍 `ok:true`。倾向：加 `sources: {eleduck: n, remoteok: n, remotive: n, wwr: n}` 与 `failedSources[]` 回传。
+  → **部分闭环（2026-09-14 S4-C）**：**轨迹侧已可区分**（`source/error` 行 + `scan/end.sourcesFailed`，见 §4.5/A17）；**工具返回值侧仍未回传**（属模型可见行为变更，本次不改）。
+- **U8 `parseEleduckPosts([null])` 抛 TypeError（D4 脏数据不设防，S4-C 登记，未改）**：机械核对证明新旧同抛（非本次引入）。后果：旧实现里整源静默消失；现在留一行 `source/error`（`failure:'unknown'`）。倾向：与 W3 的 `toIso` 同类修法——转换器入口加 `if (p === null || typeof p !== 'object') return null`（需显式批准，属行为变更：脏元素从「炸整源」变为「跳过该条」）。
+- **U9 轨迹文件无轮转**（2026-09-14 S4-C 新增）：`<DSH_HOME>/freelance-radar-trace.jsonl` 追加写、无上限。粗算每轮 ~6 行 × ~300B；按日巡检量级可忽略，但长期仍需有界裁剪（同其它 `*-trace.jsonl` 现状）。
+- **U10 线上轨迹验收未做**（2026-09-14 S4-C）：A17 的「线上」一半要等部署 + 重启后 `tail` 真实文件才能标 ✅（本批次不部署，派发纪律）。
 - **U2 `radar_find` 幻影工具**：描述让读者去调一个不存在的工具。倾向：改为「用 `radar_list` 看 id」或真的实现 `radar_find`（按标题模糊查）。
 - **U3 坏状态文件直接丢弃**：`loadState` 解析失败即重置，历史去重表蒸发。倾向：改为「重命名为 `jobs.json.corrupt-<ts>` + 落 issue」，符合「不许静默」。
 - **U4 `saveState` 静默失败**：写盘失败被吞，表现为「标记成功但重启即失」。倾向：返回 bool 并在工具结果里带 `persisted:false`。

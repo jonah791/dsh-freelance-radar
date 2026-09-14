@@ -11,9 +11,14 @@
  *   1. 解析器对脏数据一律返回 null / 跳过，**绝不抛错**（源字段缺失是常态，不是异常）
  *   2. 列表级解析必须彻底去重（同 id 只留首现），且 RemoteOK 必须跳过 [0] 的 metadata 元素
  *   3. 标题/摘要必须 stripHtml 后 trim 且截断（summary ≤300、content ≤800）
+ *
+ * 2026-09-14 S4 证据层：四个列表级解析器各有一个 `*Detailed` 变体，额外返回 `stats`
+ * （`raw/kept/dropped/reasons` = 源原始条数 / 清洗后条数 / 脏数据丢弃数 / **丢弃依据**），供轨迹落盘；
+ * 原名函数是它们的薄委托（行为逐字一致）。`RadarStats` 是**类型导入**，不引入任何 IO。
  */
 
 import type { Job } from './scoring.ts'
+import type { RadarStats } from './trace.ts'
 
 // ---------- HTML ----------
 
@@ -78,16 +83,37 @@ export function eleduckToJob(p: EleduckRawPost): Job | null {
 
 /** 电鸭 posts 列表 → Job[]（逐条转换 + 同 id 去重；坏条目跳过） */
 export function parseEleduckPosts(posts: EleduckRawPost[]): Job[] {
+  return parseEleduckPostsDetailed(posts).jobs
+}
+
+/**
+ * 同上，但把**清洗依据**一并带出（2026-09-14 S4 证据层）：
+ * `reasons` 键为 `bad-entry`（缺 id/title 或标题空）｜`duplicate`（同 id 重复）。
+ * `parseEleduckPosts` 是本函数的薄委托（行为逐字一致，仅返回值取 `.jobs`）。
+ */
+export function parseEleduckPostsDetailed(posts: EleduckRawPost[]): { jobs: Job[]; stats: RadarStats } {
   const out: Job[] = []
   const seen = new Set<string>()
+  const reasons: Record<string, number> = {}
+  const drop = (why: string) => { reasons[why] = (reasons[why] ?? 0) + 1 }
+  const raw = Array.isArray(posts) ? posts.length : 0
   for (const p of posts) {
     const job = eleduckToJob(p)
-    if (job === null) continue
-    if (seen.has(job.id)) continue
+    if (job === null) {
+      drop('bad-entry')
+      continue
+    }
+    if (seen.has(job.id)) {
+      drop('duplicate')
+      continue
+    }
     seen.add(job.id)
     out.push(job)
   }
-  return out
+  return {
+    jobs: out,
+    stats: { raw, kept: out.length, dropped: raw - out.length, ...(Object.keys(reasons).length > 0 ? { reasons } : {}) },
+  }
 }
 
 // ---------- RemoteOK ----------
@@ -128,17 +154,43 @@ export const TECH_RE = /(engineer|developer|dev|software|programmer|architect|da
 
 /** RemoteOK 原始数组 → Job[]（跳过 [0] metadata + 技术岗过滤 + 去重） */
 export function parseRemoteOk(data: RemoteOKJob[]): Job[] {
+  return parseRemoteOkDetailed(data).jobs
+}
+
+/**
+ * 同上，但把**清洗依据**一并带出（2026-09-14 S4 证据层）：
+ * `reasons` 键为 `metadata`（跳过 [0] 的 `{last_updated,legal}`）｜`bad-entry`｜`non-tech`（技术岗词表未命中）｜
+ * `duplicate`。`raw` 含 metadata 元素（源给的原始数组长度）。
+ */
+export function parseRemoteOkDetailed(data: RemoteOKJob[]): { jobs: Job[]; stats: RadarStats } {
   const out: Job[] = []
   const seen = new Set<string>()
+  const reasons: Record<string, number> = {}
+  const drop = (why: string) => { reasons[why] = (reasons[why] ?? 0) + 1 }
+  const raw = Array.isArray(data) ? data.length : 0
+  if (raw > 0) drop('metadata')
   for (const j of data.slice(1)) {
     const job = remoteOkToJob(j)
-    if (job === null || seen.has(job.id)) continue
+    if (job === null) {
+      drop('bad-entry')
+      continue
+    }
+    if (seen.has(job.id)) {
+      drop('duplicate')
+      continue
+    }
     const hay = job.title + ' ' + job.tags.join(' ')
-    if (!TECH_RE.test(hay)) continue // 非技术岗跳过（减噪音）
+    if (!TECH_RE.test(hay)) {
+      drop('non-tech')
+      continue
+    }
     seen.add(job.id)
     out.push(job)
   }
-  return out
+  return {
+    jobs: out,
+    stats: { raw, kept: out.length, dropped: raw - out.length, ...(Object.keys(reasons).length > 0 ? { reasons } : {}) },
+  }
 }
 
 // ---------- Remotive ----------
@@ -179,34 +231,70 @@ export function remotiveToJob(j: RemotiveJob): Job | null {
 
 /** Remotive jobs 列表 → Job[]（去重；坏条目跳过） */
 export function parseRemotive(jobs: RemotiveJob[]): Job[] {
+  return parseRemotiveDetailed(jobs).jobs
+}
+
+/** 同上 + 清洗依据（`bad-entry` 缺 title/url 或标题空 ｜ `duplicate`）——2026-09-14 S4 证据层。 */
+export function parseRemotiveDetailed(jobs: RemotiveJob[]): { jobs: Job[]; stats: RadarStats } {
   const out: Job[] = []
   const seen = new Set<string>()
+  const reasons: Record<string, number> = {}
+  const drop = (why: string) => { reasons[why] = (reasons[why] ?? 0) + 1 }
+  const raw = Array.isArray(jobs) ? jobs.length : 0
   for (const j of jobs) {
     const job = remotiveToJob(j)
-    if (job === null || seen.has(job.id)) continue
+    if (job === null) {
+      drop('bad-entry')
+      continue
+    }
+    if (seen.has(job.id)) {
+      drop('duplicate')
+      continue
+    }
     seen.add(job.id)
     out.push(job)
   }
-  return out
+  return {
+    jobs: out,
+    stats: { raw, kept: out.length, dropped: raw - out.length, ...(Object.keys(reasons).length > 0 ? { reasons } : {}) },
+  }
 }
 
 // ---------- WeWorkRemotely（RSS） ----------
 
 /** RSS 文本 → Job[]（轻量正则解析；缺 title/link 的 item 跳过；重复 title 去重） */
 export function parseWwrRss(xml: string): Job[] {
+  return parseWwrRssDetailed(xml).jobs
+}
+
+/**
+ * 同上 + 清洗依据（2026-09-14 S4 证据层）：`raw` = `<item>` 出现次数，
+ * `reasons` 键为 `bad-item`（缺 title/link 标签）｜`empty`（title 或 link 去空白后为空）｜`duplicate`。
+ */
+export function parseWwrRssDetailed(xml: string): { jobs: Job[]; stats: RadarStats } {
   const out: Job[] = []
   const seen = new Set<string>()
+  const reasons: Record<string, number> = {}
+  const drop = (why: string) => { reasons[why] = (reasons[why] ?? 0) + 1 }
+  let raw = 0
   const itemRe = /<item>([\s\S]*?)<\/item>/g
   let m: RegExpExecArray | null
   while ((m = itemRe.exec(xml)) !== null) {
+    raw++
     const item = m[1]!
     const titleM = /<title>(.*?)<\/title>/.exec(item)
     const linkM = /<link>(.*?)<\/link>/.exec(item)
     const descM = /<description>(.*?)<\/description>/.exec(item)
-    if (!titleM || !linkM) continue
+    if (!titleM || !linkM) {
+      drop('bad-item')
+      continue
+    }
     const title = stripHtml(titleM[1]!)
     const url = (linkM[1] ?? '').trim()
-    if (title.length === 0 || url.length === 0) continue
+    if (title.length === 0 || url.length === 0) {
+      drop('empty')
+      continue
+    }
     const pubM = /<pubDate>(.*?)<\/pubDate>/.exec(item)
     const desc = stripHtml(descM?.[1]).slice(0, 800)
     const job: Job = {
@@ -219,9 +307,15 @@ export function parseWwrRss(xml: string): Job[] {
       publishedAt: toIso(pubM?.[1]),
       content: desc,
     }
-    if (seen.has(job.id)) continue
+    if (seen.has(job.id)) {
+      drop('duplicate')
+      continue
+    }
     seen.add(job.id)
     out.push(job)
   }
-  return out
+  return {
+    jobs: out,
+    stats: { raw, kept: out.length, dropped: raw - out.length, ...(Object.keys(reasons).length > 0 ? { reasons } : {}) },
+  }
 }
