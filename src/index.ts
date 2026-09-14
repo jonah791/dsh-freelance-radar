@@ -31,6 +31,8 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { DEFAULT_PROFILE, jobFingerprint, rankJobs, scoreJob } from './scoring.ts'
 import type { Job, RadarProfile, ScoredJob } from './scoring.ts'
+import { parseEleduckPosts, parseRemoteOk, parseRemotive, parseWwrRss } from './sources.ts'
+import type { EleduckRawPost, RemoteOKJob, RemotiveJob } from './sources.ts'
 
 export const name = 'freelance-radar'
 export const inject = ['tools'] as const
@@ -105,50 +107,8 @@ function saveState(path: string, state: RadarState): void {
 
 // ---------- 电鸭采集 ----------
 
-interface EleduckRawPost {
-  id?: string
-  title?: string
-  full_title?: string
-  summary?: string
-  content?: string
-  closed?: boolean
-  published_at?: string
-  tags?: Array<{ id?: number; name?: string }>
-  category?: { id?: number; name?: string }
-}
-
-/** HTML 摘要 → 纯文本（粗略去标签） */
-function stripHtml(s: string | undefined): string {
-  if (!s) return ''
-  return s
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-/** 电鸭帖子 → Job */
-function eleduckToJob(p: EleduckRawPost): Job | null {
-  if (typeof p.id !== 'string' || typeof p.title !== 'string') return null
-  const title = (p.full_title || p.title).trim()
-  if (title.length === 0) return null
-  const tags = (p.tags ?? []).map((t) => t.name ?? '').filter((s) => s.length > 0)
-  return {
-    id: 'eleduck-' + p.id,
-    title,
-    summary: stripHtml(p.summary).slice(0, 500) || stripHtml(p.content).slice(0, 300),
-    url: 'https://eleduck.com/posts/' + p.id,
-    source: 'eleduck',
-    tags,
-    publishedAt: p.published_at ?? new Date().toISOString(),
-    closed: p.closed === true,
-    content: stripHtml(p.content).slice(0, 2000),
-  }
-}
+// 解析器（stripHtml / eleduckToJob / remoteOkToJob / remotiveToJob / parseWwrRss …）
+// 已迁 src/sources.ts（纯函数层，可离线单测）；本文件只保留网络 IO 与接线。
 
 async function fetchJson<T>(url: string, timeoutMs = 20000): Promise<T | null> {
   try {
@@ -186,9 +146,7 @@ async function fetchEleduck(apiBase: string, pages: number): Promise<Job[]> {
       `${apiBase}/posts?category=5&page=${page}`,
     )
     if (data?.posts === undefined) break
-    for (const p of data.posts) {
-      const job = eleduckToJob(p)
-      if (job === null) continue
+    for (const job of parseEleduckPosts(data.posts)) {
       if (seen.has(job.id)) continue
       seen.add(job.id)
       out.push(job)
@@ -202,89 +160,12 @@ async function fetchEleduck(apiBase: string, pages: number): Promise<Job[]> {
 
 // ---------- 国外源采集（2026-09-04 主人「把国外平台摸一遍」授权接入） ----------
 
-interface RemoteOKJob {
-  slug?: string
-  id?: string
-  position?: string
-  company?: string
-  tags?: string[]
-  date?: string
-  url?: string
-  description?: string
-  salary_min?: number
-  salary_max?: number
-}
-
-/** RemoteOK → Job（[0] 是 metadata 需跳过，外面处理） */
-function remoteOkToJob(j: RemoteOKJob): Job | null {
-  if (typeof j.slug !== 'string' || typeof j.position !== 'string') return null
-  const title = j.position.trim()
-  if (title.length === 0) return null
-  const desc = stripHtml(j.description).slice(0, 800)
-  return {
-    id: 'remoteok-' + (j.slug || j.id),
-    title: title + (j.company ? ' @ ' + j.company : ''),
-    summary: desc.slice(0, 300),
-    url: j.url || 'https://remoteok.com/remote-jobs/' + j.slug,
-    source: 'remoteok',
-    tags: (j.tags ?? []).filter((t) => typeof t === 'string'),
-    publishedAt: j.date ? new Date(j.date).toISOString() : new Date().toISOString(),
-    content: desc,
-  }
-}
-
 /** 采集 RemoteOK（JSON API，~100 条） */
 async function fetchRemoteOK(): Promise<Job[]> {
   const data = await fetchJson<RemoteOKJob[]>('https://remoteok.com/api')
   if (!Array.isArray(data)) return []
-  // [0] 是 {last_updated,legal} metadata，跳过
-  const out: Job[] = []
-  const seen = new Set<string>()
-  // RemoteOK 免费源噪音大（酒店维修/邮差/地勤等非技术岗混入）——只收技术岗（2026-09-04）
-  const TECH_RE = /(engineer|developer|dev|software|programmer|architect|data|analyst|scientist|ai|ml|machine|full.?stack|backend|frontend|devops|sysadmin|sys.?admin|infosec|security|designer|product manager|technical|qa|test|support engineer|coder|programmer)/i
-  for (const j of data.slice(1)) {
-    const job = remoteOkToJob(j)
-    if (job === null || seen.has(job.id)) continue
-    const hay = job.title + ' ' + job.tags.join(' ')
-    if (!TECH_RE.test(hay)) continue // 非技术岗跳过（减噪音）
-    seen.add(job.id)
-    out.push(job)
-  }
-  return out
-}
-
-interface RemotiveJob {
-  id?: number
-  url?: string
-  title?: string
-  company_name?: string
-  category?: string
-  tags?: string[]
-  job_type?: string
-  publication_date?: string
-  salary?: string
-  description?: string
-  candidate_required_location?: string
-}
-
-/** Remotive → Job */
-function remotiveToJob(j: RemotiveJob): Job | null {
-  if (typeof j.title !== 'string' || typeof j.url !== 'string') return null
-  const title = j.title.trim()
-  if (title.length === 0) return null
-  const tags = [j.category, ...(j.tags ?? []), j.job_type, j.candidate_required_location]
-    .filter((t): t is string => typeof t === 'string' && t.length > 0)
-  const desc = stripHtml(j.description).slice(0, 800)
-  return {
-    id: 'remotive-' + String(j.id ?? title),
-    title: title + (j.company_name ? ' @ ' + j.company_name : ''),
-    summary: desc.slice(0, 300),
-    url: j.url,
-    source: 'remotive',
-    tags,
-    publishedAt: j.publication_date ? new Date(j.publication_date).toISOString() : new Date().toISOString(),
-    content: desc,
-  }
+  // [0] 是 {last_updated,legal} metadata，跳过 + 技术岗过滤 + 去重全在 parseRemoteOk
+  return parseRemoteOk(data)
 }
 
 /** 采集 Remotive（JSON API） */
@@ -292,51 +173,14 @@ async function fetchRemotive(): Promise<Job[]> {
   const data = await fetchJson<{ jobs?: RemotiveJob[] }>('https://remotive.com/api/remote-jobs?limit=100')
   const jobs = data?.jobs
   if (!Array.isArray(jobs)) return []
-  const out: Job[] = []
-  const seen = new Set<string>()
-  for (const j of jobs) {
-    const job = remotiveToJob(j)
-    if (job === null || seen.has(job.id)) continue
-    seen.add(job.id)
-    out.push(job)
-  }
-  return out
+  return parseRemotive(jobs)
 }
 
 /** 采集 WeWorkRemotely（RSS，轻量正则解析） */
 async function fetchWeWorkRemotely(): Promise<Job[]> {
   const xml = await fetchText('https://weworkremotely.com/categories/remote-programming-jobs.rss')
   if (xml === null) return []
-  const out: Job[] = []
-  const seen = new Set<string>()
-  const itemRe = /<item>([\s\S]*?)<\/item>/g
-  let m: RegExpExecArray | null
-  while ((m = itemRe.exec(xml)) !== null) {
-    const item = m[1]!
-    const titleM = /<title>(.*?)<\/title>/.exec(item)
-    const linkM = /<link>(.*?)<\/link>/.exec(item)
-    const descM = /<description>(.*?)<\/description>/.exec(item)
-    if (!titleM || !linkM) continue
-    const title = stripHtml(titleM[1]!)
-    const url = (linkM[1] ?? '').trim()
-    if (title.length === 0 || url.length === 0) continue
-    const pubM = /<pubDate>(.*?)<\/pubDate>/.exec(item)
-    const desc = stripHtml(descM?.[1]).slice(0, 800)
-    const job: Job = {
-      id: 'wwr-' + title.slice(0, 60),
-      title,
-      summary: desc.slice(0, 300),
-      url,
-      source: 'wwr',
-      tags: ['远程'],
-      publishedAt: pubM ? new Date(pubM[1]!).toISOString() : new Date().toISOString(),
-      content: desc,
-    }
-    if (seen.has(job.id)) continue
-    seen.add(job.id)
-    out.push(job)
-  }
-  return out
+  return parseWwrRss(xml)
 }
 
 /** 全源采集（电鸭 + 国外） */

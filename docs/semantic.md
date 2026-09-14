@@ -157,18 +157,27 @@
 | A3 | 指纹去重生效 | 连调两次 `radar_scan`，第二次 `added == 0`（无新任务时） | 待验收 |
 | A4 | 排除词硬过滤 | 造一条含「web3」的 job 进 `jobs.json` → `radar_list` 该条 `excluded:true, lastScore:0` | 待验收 |
 | A5 | 打分上限正确 | 构造 keyword 全命中的 job → `breakdown.keyword <= 40`（同理 tag≤20/quality≤10） | 待验收 |
-| A6 | freshness 边界 | `daysSince=3 → 15`；`=14 → 0`；`=8 → round(15*(1-5/11))=8` | 待验收 |
+| A6 | freshness 边界 | `daysSince=3 → 15`；`=14 → 0`；`=8.5 → 8`——**已由单测锁住**：`tests/scoring.test.mjs`「阈值边界」+ 单调不增断言 | ✅ 2026-09-14 |
 | A7 | disabled 闸门 | 配置 `enabled=false` 后 `radar_scan` → `ok:false` + `freelance-radar disabled` | 待验收 |
 | A8 | mark 落盘可复用 | `radar_mark status=considered` → 读 `jobs.json` 该条 `status/updatedAt` 已变 | 待验收 |
 | A9 | digest 跟进口径 | 把某条 `considered` 的 `updatedAt` 改成 4 天前 → `radar_digest.pendingFollowups` 含它 | 待验收 |
 | A10 | 坏 JSON 不崩 | 把 `jobs.json` 写成 `{bad` → `radar_list` 返回 `ok:true, total:0`（重置而非抛错） | 待验收 |
+| A11 | 回归能力存在且绿 | `npm test`（= `node --test "tests/*.test.mjs"`，跑 `lib/` 产物）→ **36 pass / 0 fail** | ✅ 2026-09-14 |
+| A12 | 打分纯逻辑失败/退化路径被锁住 | `tests/scoring.test.mjs`：非法 ISO→999、未来时间夹到 0、空画像/空 tags 不抛、封顶 40/20、幂等 | ✅ 2026-09-14 |
+| A13 | 源解析器对脏数据保守返回（不抛） | `tests/sources.test.mjs`：缺 id/title、类型不符、空标题→`null`；列表级坏条目跳过；空数组→`[]` | ✅ 2026-09-14 |
+| A14 | **脏日期不再拖垮整源**（本次修掉的真缺陷） | `node --test tests/sources.test.mjs` 三条「非法日期不得抛错」（remoteok/remotive/wwr）转绿；修复前是 `RangeError: Invalid time value` | ✅ 2026-09-14 |
+| A15 | 解析层零 IO（可离线跑） | `tests/*.test.mjs` 全程无 fetch/fs 调用（纯函数；`Date` 仅用于缺失日期回落） | ✅ 2026-09-14 |
 
 ## 8 · 与实现的关系
 
-- 主实现：`src/index.ts`（625 行：4 源采集 + 存储 + 4 工具）、`src/scoring.ts`（189 行纯逻辑，**零 IO**——本就适合单测）。
+- 主实现：`src/index.ts`（4 源网络采集 + 存储 + 4 工具）、`src/scoring.ts`（189 行纯逻辑，**零 IO**）、
+  `src/sources.ts`（数据源解析层，**零 IO**——2026-09-14 从 `index.ts` 抽出，见 §9）。
+- 测试：`tests/scoring.test.mjs`（打分/新鲜度/排名/指纹）+ `tests/sources.test.mjs`（4 源解析器），
+  `npm test` 跑 `lib/` 产物（与运行时同源）。
 - 同语义副本：无。
 - 未实现/未验证部分**显式标注**：
-  - **无 `tests/`**：A1–A10 全部待验收。`scoring.ts` 是纯函数（`now` 可注入），最该先补单测。
+  - ~~**无 `tests/`**：A1–A10 全部待验收。~~ 已补（A11–A15 已验证）；A1–A5/A7–A10 属**接线/线上**行为，仍需真实调用验收（不属离线单测面）。
+  - `TECH_RE`（RemoteOK 技术岗过滤）是**无词界子串匹配**：`'ai'` 会命中 `"mAIntenance"`、`'dev'` 会命中 `"devops"` 之外的各种词——已知**过滤过宽**（噪音岗漏网），单测已把该真实语义锁住（`tests/sources.test.mjs`），收紧会改筛选行为故未改，见 §10 U7。
   - `radar_mark` 的 description 提到「可用 **`radar_find`** 查」——**该工具不存在**（实际只有 4 个工具）；文案与工具面不一致。
   - `radar_scan` 的 `push` 参数**未被 `execute` 消费**（`args` 未读 push；render 也无分支），描述与实际行为不符。
   - `Config.rssSources` **未被消费**；`RadarProfile.pages` 默认 5，但 `fetchEleduck` 内 `if (page >= 2) break` 使电鸭**最多只抓 2 页**。
@@ -183,6 +192,13 @@
   - 语义**被修正**：`radar_mark` 描述里的 `radar_find` 是**不存在的工具**；`push` 参数声明但未消费——本文以实现为准，并把差异列入 §8/§10。
   - 教训：文档引用的**外部工具名**也算契约面——描述里出现一个不存在的工具名，会让下一个读者（尤其压缩后的我）调用失败后才反查。语义文档必须列调用点清单与真实工具面。
 
+- **2026-09-14 可维护性补课（批次 W3）：解析层抽纯 + 测试 + 修脏日期缺陷**
+  - 语义**被确认**（原以为要改、实测符合预期）：解析器对缺字段/类型不符一律保守返回 `null`，不抛错。
+  - 语义**被补充**：`stripHtml / eleduckToJob / remoteOkToJob / remotiveToJob` 原困在 `index.ts`（与 fetch/存储混写）→ **仅搬家**到新模块 `src/sources.ts`；三个列表级清洗循环（eleduck/remoteok/remotive/wwr）从 `fetch*` 内抽出为 `parseEleduckPosts / parseRemoteOk / parseRemotive / parseWwrRss`（IO 留在 `index.ts`）。跨页去重（电鸭 `seen`）**保持在 `fetchEleduck`**，未下移到页面级解析器——避免丢跨页去重语义。
+  - 语义**被修正（真缺陷，先证伪后修）**：`remoteOkToJob / remotiveToJob / parseWwrRss` 原写 `new Date(v).toISOString()`，**非法日期抛 `RangeError: Invalid time value`**；而三处调用都在 `Promise.allSettled` 里 → 该源整体记为 rejected 被丢弃 → **一条脏日期条目静默清空一整个源**（表现＝「今天没新任务」，与 U1 同形）。修法：新增纯函数 `toIso(v)`，非法/缺失一律回落当前时间（与「日期缺失」既有语义一致）；只改崩溃路径，正常日期行为逐字不变。
+  - 语义**被修正（预期写错，不是代码错）**：`remotiveToJob` 的 `title` 是**先 trim 再拼 company**（`' Dev '` → `'Dev @ ACME'`）；`scoreJob` 的 `keyword` 分是**逐条关键词累加**（`'AI Agent 工程师'` 只命中 2 条 = 16 分，不是封顶 40）。两处按真实语义改写测试预期并加注释。
+  - 教训：**「解析器不抛」这类不变量只有跑脏数据才暴露**——原实现路径上「日期字段缺失」有回落、`日期非法` 没有，差一个字符，线上表现却是整源静默消失。
+
 ## 10 · 未决问题
 
 - **U1 源全挂 vs 今日无任务不可区分**：`fetch*` 失败一律返回 `[]`，`radar_scan` 仍 `ok:true`。倾向：加 `sources: {eleduck: n, remoteok: n, remotive: n, wwr: n}` 与 `failedSources[]` 回传。
@@ -191,3 +207,6 @@
 - **U4 `saveState` 静默失败**：写盘失败被吞，表现为「标记成功但重启即失」。倾向：返回 bool 并在工具结果里带 `persisted:false`。
 - **U5 `pages` 与 `page>=2 break` 冲突**：配置项形同虚设。倾向：删 `pages` 或让它真正生效（需先评估电鸭限流）。
 - **U6 `Config.profile` 用 `z.any()`**：无 schema 校验，错误画像（如 `minScore:'60'` 字符串）会静默生效。倾向：改为 `z.object(...).required(false)` 的显式 schema。
+- **U7 `TECH_RE` 过滤过宽（本次登记，未改）**：无词界子串匹配 → `'ai'` 命中 `"mAIntenance"`、`'ml'`/`'dev'` 同理，非技术岗漏网（与注释「减噪音」的意图相反）。倾向：改词界匹配 `\b(...)\b` 并加回归样本；属**筛选行为变更**，需先评估召回损失（收紧可能误杀 `OpenAI`/`LLM` 类无词界写法）。
+- **U1 补充（2026-09-14）**：本次已修掉其中一条**确定性**成因（脏日期 → 整源 rejected）。剩余成因（真实网络失败、源改版）仍不可区分，方案不变。
+- **U3/U4 状态与本次测试的关系**：`loadState`/`saveState` 的失败路径**仍无测试**——它们碰 IO，需先抽成「以注入的读写函数为参数」的纯状态机方可离线断言（本次未做，产能优先级低于解析层）。
