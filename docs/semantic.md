@@ -14,8 +14,7 @@
 
 ## 1 · 定位与反定位
 
-**定位**：支撑主人「自由人 / 数字游民」路线的**信息采集器**——聚合公开远程任务源 → 按主人能力画像（AI/Agent/LLM + 排除词）打分排序 →
-工具面呈现高分清单与每日摘要。主人决策闭环：`radar_scan` 出清单 → `radar_mark` 留痕 → 推送/写 proposal 由爱丽丝自己做。
+**定位**：支撑主人「自由人 / 数字游民」路线的**信息采集器**——聚合公开远程任务源 → 按主人能力画像（AI/Agent/LLM + 排除词）打分排序 → 工具面呈现高分清单与每日摘要。主人决策闭环：`radar_scan` 出清单 → `radar_mark` 留痕 → 推送/写 proposal 由爱丽丝自己做。
 
 **反定位（本文不管什么）**：
 - **不自动投标、不写回平台**（合规红线，源码注释与 README 均明示）——本插件只有**读**公开数据
@@ -87,9 +86,7 @@
 | 硬过滤 | — | `excludeKeywords` 命中任一 → `excluded:true, score:0` |
 | mismatch | — | 命中 `mismatchSignals` → `mismatch[]`（**不降分**） |
 
-`DEFAULT_PROFILE` 关键值（逐字）：`title='AI Agent / LLM 应用定制工程师'`、`minScore=60`、`pages=5`；
-`excludeKeywords=['区块链','web3','币圈','虚拟币','博彩','刷单','灰产','加密货币','token 众筹','刷量']`；
-`mismatchSignals=['n8n','wordpress','php','java','c#','.net','unity','flutter','react native','小程序原生','django','ruby','golang','lua']`。
+`DEFAULT_PROFILE` 关键值（逐字）：`title='AI Agent / LLM 应用定制工程师'`、`minScore=60`、`pages=5`； `excludeKeywords=['区块链','web3','币圈','虚拟币','博彩','刷单','灰产','加密货币','token 众筹','刷量']`； `mismatchSignals=['n8n','wordpress','php','java','c#','.net','unity','flutter','react native','小程序原生','django','ruby','golang','lua']`。
 
 ### 4.3 状态→裁决表
 | 输入状态 | 裁决 | 依据 |
@@ -188,8 +185,7 @@
 6. **证据层自证（2026-09-14 新增）**：一轮 `radar_scan` 后 `tail -6 "$DSH_HOME/freelance-radar-trace.jsonl"` 出现 `scan/start` + **4 行 `source/*`（源名各异）** + `scan/end`，且 `scan/end.build` 的 mtime 段 == `stat -c %Y lib/trace.js`×1000。
 7. **一命令判读（Q4 口诀）**：`tail -1 … | grep '"phase":"scan/end"'` → `sourcesFailed>0` ⇒ 有源挂了；`sourcesFailed=0 且 added=0` ⇒ 真没新任务。
 
-**回退**：`git revert` 最近提交 → `pnpm build` → 预检 → 哨兵重启 web。**只关证据层**：`DSH_RADAR_TRACE=0`（不触业务代码）。
-**数据面回退**：`jobs.json` 是纯本地状态，备份/还原该文件即可（`status`/`note` 全部在里面）；代码回退**不会**破坏已有状态（`loadState` 对未知字段宽容）。
+**回退**：`git revert` 最近提交 → `pnpm build` → 预检 → 哨兵重启 web。**只关证据层**：`DSH_RADAR_TRACE=0`（不触业务代码）。 **数据面回退**：`jobs.json` 是纯本地状态，备份/还原该文件即可（`status`/`note` 全部在里面）；代码回退**不会**破坏已有状态（`loadState` 对未知字段宽容）。
 
 ## 7 · 可证伪验收清单
 
@@ -234,7 +230,7 @@
   - ~~`radar_mark` 的 description 提到「可用 **`radar_find`** 查」——**该工具不存在**（实际只有 4 个工具）；文案与工具面不一致。~~ **已修 2026-09-14**：描述改指 `radar_list` 返回项的 `id` 字段，且 `radar_list` 的 render **真的输出 `id:`**（只改描述不变工具面＝半吊子修复）。
   - ~~`radar_scan` 的 `push` 参数**未被 `execute` 消费**（`args` 未读 push；render 也无分支），描述与实际行为不符。~~ **已修 2026-09-14**：**删除**该参数（不补实现）——本工具按设计不发送任何消息，推送归爱丽丝 `telegram_send`。
   - `Config.rssSources` **未被消费**；`RadarProfile.pages` 默认 5，但 `fetchEleduck` 内 `if (page >= 2) break` 使电鸭**最多只抓 2 页**。
-  - ~~README 与源码头部引用的设计文档 `docs/freelance-radar-design.md` 在本仓库中**不存在**（`scoring.ts` 头部仍指向它）。~~ **已勘误 2026-09-14**：设计文档**存在**，位于**工作区** `E:\alice\docs\freelance-radar-design.md`（不在本插件仓内）——原标题里的「不存在」是**相对路径视角**造成的误判；实际只有两处源码头部（`index.ts` / `scoring.ts`）引用它，**README 并未引用**（§8 原表述把这半句也写错了）。两处头部路径已改指真实位置。
+  - ~~README 与源码头部引用的设计文档 `docs/design/freelance-radar-design.md` 在本仓库中**不存在**（`scoring.ts` 头部仍指向它）。~~ **已勘误 2026-09-14**：设计文档**存在**，位于**工作区** `E:\alice\docs\design\freelance-radar-design.md`（不在本插件仓内）——原标题里的「不存在」是**相对路径视角**造成的误判；实际只有两处源码头部（`index.ts` / `scoring.ts`）引用它，**README 并未引用**（§8 原表述把这半句也写错了）。两处头部路径已改指真实位置。
   - ~~README 写「v1 = 电鸭 API（+RSS 预留）」，实现已接入 4 源（电鸭/RemoteOK/Remotive/WWR）。~~ **已勘误 2026-09-14**：README 现已写明「电鸭 + RemoteOK / Remotive / WeWorkRemotely」四源（README 收口轮次已改），本条声明**过期**。
 
 ## 9 · 实践修订记录
@@ -245,7 +241,7 @@
   - ③ **「雷达 9 天未扫」定性纠正 + 停摆可见化**：实测 `src` 无定时器、计划任务无 radar、`life-core` 不引用它，且**设计文档 §5 明写「不内建定时器（自主性铁律）——感知圈/主人手动触发」** ⇒ 这**不是**「机制静默停摆」，而是**手动触发模式的必然结果**；**真缺口是「停摆不可见」**（没有任何面会说「N 天没扫了」）。修法：`radar_digest` 新增 `lastScanAt` / `staleDays`，判据源 = **自证轨迹的 `scan/*` 相位最大 `atMs`**（不是 `jobs.json` mtime——那次写入也可能来自 `radar_mark`），`≥7` 天在 render + summary 里响亮告警，无记录 → `-1` 且明说「无记录」。
     - **同日二次修订（部署后线上验收当场发现）**：轨迹层**2026-09-14 才上线** ⇒ 上线前的扫描根本没有 `scan/*` 行，主判据为 `null`，工具只报「无记录」——**「状态文件 9 天没动过」这条已经存在的信息仍被丢掉**，等于只关了一半。补**降级旁证** `stateWrittenAt`/`stateStaleDays`（`jobs.json` mtime），文案显式标注「可能是 `radar_mark`，不等于扫描」。**主判据不换**（C2 单一真源：mtime 混淆「扫过」与「标过」），旁证只回答「至少多久没动过」。
     - 教训：**「机制修好」≠「症状消失」**——线上跑一次才发现主判据在**历史数据上恒为空**；修观测类缺陷必须用「拿真实现状跑一遍」验收，而不是只看单测绿。
-  - ④ **设计文档路径**：`docs/freelance-radar-design.md` 实际在**工作区** `E:\alice\docs\`（不在插件仓内），两处源码头部已改指真实路径；并勘误 §8 的「README 也引用」半句（README 未引用）。
+  - ④ **设计文档路径**：`docs/design/freelance-radar-design.md` 实际在**工作区** `E:\alice\docs\`（不在插件仓内），两处源码头部已改指真实路径；并勘误 §8 的「README 也引用」半句（README 未引用）。
   - 测试 **61 → 65**（`lastScanAtMs` 纯函数 2 例 + digest 接线 1 例，含「只有 `boot` 行 ≠ 扫过」判据）。
   - 教训：**先复现再改，连「任务描述」一起复现**——本条任务描述里的两点（雷达停摆＝机制故障、设计文档不存在）都被现场证据推翻，照抄描述会写出错误的修复方向。
 
